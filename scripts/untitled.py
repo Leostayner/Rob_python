@@ -17,16 +17,8 @@ from ar_track_alvar_msgs.msg import AlvarMarker, AlvarMarkers
 from neato_node.msg import Bump
 from sensor_msgs.msg import LaserScan
 
-bridge = CvBridge()
-
 #Variaveis Para Calcular a Distancia do objeto
-known_width = 6.5
-wpix = 116 
-d = 34 
-focal_dist = (wpix * d) / known_width
-
-z = 100
-z_desejado = 80
+maior_contorno_area = 0
 
 #variaveis do scaner_1
 Frente_es = 0
@@ -39,15 +31,25 @@ cv_image = None
 media = []
 centro = [320, 240]
 atraso = 1.5
+bridge = CvBridge()
 
 #variavel de velocidade
 vel = Twist(Vector3(0,0,0), Vector3(0,0,0))
-
+vl = 0
+va = 0
+#variavel do scaner_2
+ang_min = 315
+ang_max = 45
+s_min = 0.25
+s_max = 0.35
+v_scan = 0
+local = 0
 
 #processamento da imagem
 def processa(dado):
 	global media
 	global centro
+	global maior_contorno_area
 	frame = dado
 	frame_r = frame[:,:,2]
 	frame_g = frame[:,:,1]
@@ -64,12 +66,10 @@ def processa(dado):
 	disp = cv2.cvtColor(frame_rg, cv2.COLOR_GRAY2BGR)
     	for cnt in contornos:
     	    area = cv2.contourArea(cnt)
-	    #z = (known_width * focal_dist) / (2 * cnt[2])
     	    if area > maior_contorno_area:
     	        maior_contorno = cnt
     	        maior_contorno_area = area
-    
-    	
+
 	# Encontramos o centro do contorno fazendo a média de todos seus pontos.
     	if not maior_contorno is None :
     	    cv2.drawContours(frame, [maior_contorno], -1, [0, 0, 255], 5)
@@ -80,7 +80,7 @@ def processa(dado):
     	else:
             media = []
 			
-	cv2.imshow('caixa', disp)
+	cv2.imshow('imagem', disp)
 
 	cv2.waitKey(1)
 
@@ -109,7 +109,6 @@ def recebe(imagem):
 #Função do Scaner Bump
 def recebe_bump(msg):
 	global Frente_es
-	print("foiiiiiii")
 	global Lado_es
 	global Frente_dir
 	global Lado_dir
@@ -119,79 +118,126 @@ def recebe_bump(msg):
 	Frente_dir = msg.rightFront
 	Lado_dir = msg.rightSide
 
+#Função para definir a velocidade angular
+def velocidade_ang(dif_x):
+	global va	
 
-#Função para movimentação do robo
+	if dif_x > 60:
+		va = -0.5
+
+	elif dif_x > 30:
+		va  = -0.3
+	
+	elif dif_x < -60:
+		va = 0.5
+
+	elif dif_x < -30:	
+		va = 0.3 	
+
+#Função para definir a velocidade Linear
+def velocidade():
+	global maior_contorno_area
+	global vl
+	
+	if maior_contorno_area < 10000:
+		vl = 0.3
+
+	elif maior_contorno_area < 34000:
+		vl = 0.15 
+
+	else:
+		vl = 0
+
+#Função para a movimentação do robo
 def Movimento(dif_x):
 	global media
-	print(dif_x)
+	global maior_contorno_area
 	global z
-	
-	if z > z_desejado: 	
-		if math.fabs(dif_x)<30 :
-			print('seguindo') 
-			return Twist(Vector3(0.2,0,0), Vector3(0,0,0))
+	global vl
+	global va
+		
+	if math.fabs(dif_x)<30 :
+		#Segue reto
+		return Twist(Vector3(vl,0,0), Vector3(0,0,0))
 
-		else:	
-			if dif_x > 0:
-				# Vira a direita
-				print('direita')
-				return Twist(Vector3(0.2,0,0), Vector3(0,0,-0.3))
-			else:
-				# Vira a esquerda
-				print('esquerda')
-				return Twist(Vector3(0.2,0,0), Vector3(0,0,0.3))
 	else:	
-		print('Alvejadooooooooooooooooooooooooooooooooooooooooooooo')		
-		return  Twist(Vector3(0.0,0,0), Vector3(0,0,0))
+		if dif_x > 0:
+			# Vira a direita
+			return Twist(Vector3(vl,0,0), Vector3(0,0,va))
+		else:
+			# Vira a esquerda
+			return Twist(Vector3(vl,0,0), Vector3(0,0,va))
+
 			
 
 # Função para procurar o objeto
 def Procura():
-	print('Procurando')
-	return Twist(Vector3(0,0,0), Vector3(0,0,-0.2))
-	
-#def recebe_scan(msg):
-#	global v_scan
-#		for i in msg.renges:
-#			if i < 300:
-#	v_scan = laser.ranges.index(i)
-#	print(v_scan)
+	return Twist(Vector3(0,0,0), Vector3(0,0,0.2))
 
+#Função Laser Scan	
+def recebe_scan(msg):
+	global v_scan
+	global ang_min 
+	global ang_max 
+	global s_min 
+	global s_max 
+	global local 
+	v_scan = 0
 
+	for i, z in enumerate(msg.ranges):
+		if i < ang_max or i > ang_min:
+			if z > s_min and z < s_max:
+				print('a')
+				v_scan = z 
+				local = i
+
+#Main
 if __name__=="__main__":
 
 	rospy.init_node("cor")
 	recebedor = rospy.Subscriber("/camera/image_raw", Image, recebe, queue_size=10, buff_size = 2**24)
 	velocidade_saida = rospy.Publisher("/cmd_vel", Twist, queue_size = 1)
 	recebedor_bumper = rospy.Subscriber('/bump', Bump, recebe_bump)
-#	recebedor_scan = rospy.Subscriber('/scan' , LaserScan, recebe_scan)
+	recebedor_scan = rospy.Subscriber('/scan' , LaserScan, recebe_scan)
 
-	cv2.namedWindow("caixa")
+	cv2.namedWindow("imagem")
 	cv2.namedWindow("video")
 
 	try:
 
 		while not rospy.is_shutdown():
 			SL = 0.1
-			if (Frente_es or Lado_es) == 1:
-				vel = Twist(Vector3(-0.8, 0, 0), Vector3(0,0, -0.8))		
-				SL = 0.8
-			elif (Frente_dir or Lado_dir) == 1:
-				vel = Twist(Vector3(-0.8, 0, 0), Vector3(0,0, 0.8))
-				SL = 0.8
-			elif (Frente_dir and Frente_es) == 1:
-				vel = Twist(Vector3(-0.5, 0, 0), Vector3(0,0,1))
-				SL = 0.8
-				print("Saiiii")
-			
+			#laser scan
+			if v_scan > s_min and v_scan < s_max:
+				if local < ang_max:
+					vel = Twist(Vector3(-0.5, 0, 0), Vector3(0,0,0))
 
+				elif local > ang_min:
+					vel = Twist(Vector3(-0.5, 0, 0), Vector3(0,0,0))
+			#laser bump
+			elif (Frente_es or Lado_es) == 1:
+				vel = Twist(Vector3(-0.8, 0, 0), Vector3(0,0, -1))		
+				SL = 0.8
+			
+			elif (Frente_dir or Lado_dir) == 1:
+				vel = Twist(Vector3(-0.8, 0, 0), Vector3(0,0, 1))
+				SL = 0.8
+
+			elif (Frente_dir and Frente_es) == 1:
+				vel = Twist(Vector3(-0.8, 0, 0), Vector3(0,0,0))
+				SL = 0.8
+				print('ai')
+
+			#velocidade e movimento
 			elif len(media) != 0 and len(centro) != 0:
 				dif_x = media[0]-centro[0]
 				dif_y = media[1]-centro[1]
+				velocidade()
+				velocidade_ang(dif_x)
 				vel = Movimento(dif_x)
+			#procura			
 			else:
 				vel = Procura()
-			print(vel)
 			velocidade_saida.publish(vel)
 			
 			rospy.sleep(SL)
